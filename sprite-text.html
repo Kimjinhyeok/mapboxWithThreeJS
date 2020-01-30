@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+
+  
+  <script src="./node_modules/jquery/dist/jquery.min.js"></script>
+  <script src="https://unpkg.com/three@0.106.2/build/three.js"></script>
+  <script src="https://unpkg.com/three@0.106.2/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://api.tiles.mapbox.com/mapbox-gl-js/v1.6.0/mapbox-gl.js"></script>
+
+  <link href="https://api.tiles.mapbox.com/mapbox-gl-js/v1.6.0/mapbox-gl.css" rel="stylesheet" />
+  <title>Document</title>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script>
+    var container, scene, camera, renderer, controls, stats;
+    var clock = new THREE.Clock();
+
+    // custom global variables
+    var cube;
+    var projector, mouse = { x: 0, y: 0 }, INTERSECTED;
+    var sprite1;
+    var canvas1, context1, texture1;
+    const modelRotate = [Math.PI / 2, 0, 0];
+
+    var mapDom = document.getElementById('map');
+    mapDom.style.width = window.innerWidth + 'px';
+    mapDom.style.height = window.innerHeight + 'px';
+
+    mapboxgl.accessToken = 'pk.eyJ1IjoiYmtobzIiLCJhIjoiY2syNWZiOXM3MGh3eDNnbnV1bmN0NTBwMyJ9.uigMIX5bGaHKQ4HetqN8IA';
+    var map = new mapboxgl.Map({
+      container: "map",
+      style: 'mapbox://styles/mapbox/streets-v11',
+      pitch: 45,
+      center: [127.1260649, 37.3858709],
+      zoom: 18,
+      bearing: 0,
+      antialias: true,
+      localIdeographFontFamily: "'Noto Sans', 'Noto Sans CJK SC', sans-serif"
+    });    
+
+    init();
+    
+    map.on('style.load', function(e){
+      map.addLayer(customLayer, 'waterway-label');
+    })
+
+
+    var customLayer = {
+      id : 'sprite-label',
+      type : 'custom',
+      renderingMode : '3d',
+      onAdd : function(map, gl) {
+        
+        // RENDERER
+        renderer = new THREE.WebGLRenderer( {
+          antialias:true,
+          canvas : map.getCanvas(),
+          context : gl
+        } );
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer = renderer;
+        this.scene = scene;
+        this.camera = camera;
+        this.map = map;
+        
+        var spritey = makeTextSprite( " World! ", 
+          { fontsize: 32, fontface: "Georgia", borderColor: {r:0, g:0, b:255, a:1.0} } );
+
+        const rt = new THREE.WebGLRenderTarget(128, spritey);
+        this.scene.add(spritey);
+        this.renderer.setRenderTarget(rt);
+        this.renderer.autoClear = false;
+      },
+      render : function(gl, matrix) {
+        var m = new THREE.Matrix4().fromArray(matrix);
+        
+
+        this.camera.projectionMatrix = m.multiply(getMatrix([127.1260649, 37.3858709], 10, true));
+        this.renderer.state.reset();
+        this.renderer.render(this.scene, this.camera);
+        this.map.triggerRepaint();
+        // controls.update();
+      }
+    }
+
+    function init(){
+      // SCENE
+      scene = new THREE.Scene();
+
+      // CAMERA
+      var SCREEN_WIDTH = window.innerWidth, SCREEN_HEIGHT = window.innerHeight;
+      var VIEW_ANGLE = 45, ASPECT = SCREEN_WIDTH / SCREEN_HEIGHT, NEAR = 0.1, FAR = 20000;
+      camera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR);
+      scene.add(camera);
+
+      camera.lookAt(scene.position);	
+
+      
+      // LIGHT
+      var light = new THREE.PointLight(0xffffff);
+      scene.add(light);
+
+      // SKYBOX/FOG
+      var skyBoxGeometry = new THREE.CubeGeometry( 10000, 10000, 10000 );
+      var skyBoxMaterial = new THREE.MeshBasicMaterial( { color: 0x9999ff, side: THREE.BackSide } );
+      var skyBox = new THREE.Mesh( skyBoxGeometry, skyBoxMaterial );
+      // scene.add(skyBox);      
+	
+      var cubeGeometry = new THREE.CubeGeometry( 1000, 1000, 1000 );
+      var cubeMaterial = new THREE.MeshNormalMaterial();
+      cube = new THREE.Mesh( cubeGeometry, cubeMaterial );
+
+      cube.name = "Cube";
+      cube.position.set(0,0,0);
+      // scene.add(cube);
+      
+      // var spritey = makeTextSprite( " Hello, ", 
+      //   { fontsize: 24, borderColor: {r:255, g:0, b:0, a:1.0}, backgroundColor: {r:255, g:100, b:100, a:0.8} } );
+
+      // // LatLng를 Vector3로 변경해야함
+      // spritey.position.set(-85,105,55);
+      // scene.add( spritey );
+
+      // var spritey = makeTextSprite( " World! ", 
+      //   { fontsize: 32, fontface: "Georgia", borderColor: {r:0, g:0, b:255, a:1.0} } );
+
+      // LatLng를 Vector3로 변경해야함
+      // spritey.position.set(55,105,55);
+      // scene.add( spritey );      
+    }
+    function makeTextSprite( message, parameters ) {
+      if ( parameters === undefined ) parameters = {};
+      
+      var fontface = parameters.hasOwnProperty("fontface") ? 
+        parameters["fontface"] : "Arial";
+      
+      var fontsize = parameters.hasOwnProperty("fontsize") ? 
+        parameters["fontsize"] : 18;
+      
+      var borderThickness = parameters.hasOwnProperty("borderThickness") ? 
+        parameters["borderThickness"] : 4;
+      
+      var borderColor = parameters.hasOwnProperty("borderColor") ?
+        parameters["borderColor"] : { r:0, g:0, b:0, a:1.0 };
+      
+      var backgroundColor = parameters.hasOwnProperty("backgroundColor") ?
+        parameters["backgroundColor"] : { r:255, g:255, b:255, a:1.0 };
+
+        
+      var canvas = document.createElement('canvas');
+      var context = canvas.getContext('2d');
+      context.font = "Bold " + fontsize + "px " + fontface;
+        
+      // get size data (height depends only on font size)
+      var metrics = context.measureText( message );
+      var textWidth = metrics.width;
+      
+      // background color
+      context.fillStyle   = "rgba(" + backgroundColor.r + "," + backgroundColor.g + ","
+                      + backgroundColor.b + "," + backgroundColor.a + ")";
+      // border color
+      context.strokeStyle = "rgba(" + borderColor.r + "," + borderColor.g + ","
+                      + borderColor.b + "," + borderColor.a + ")";
+
+      context.lineWidth = borderThickness;
+      roundRect(context, borderThickness/2, borderThickness/2, textWidth + borderThickness, fontsize * 1.4 + borderThickness, 6);
+      // 1.4 is extra height factor for text below baseline: g,j,p,q.
+      
+      // text color
+      context.fillStyle = "rgba(0, 0, 0, 1.0)";
+
+      context.fillText( message, borderThickness, fontsize + borderThickness);
+      
+      // canvas contents will be used for a texture
+      var texture = new THREE.Texture(canvas) 
+      texture.needsUpdate = true;
+
+      var spriteMaterial = new THREE.SpriteMaterial( 
+        { map: texture } );
+      var sprite = new THREE.Sprite( spriteMaterial );
+      
+      sprite.scale.set(100,50,1.0);
+      return sprite;	
+    }
+
+    // function for drawing rounded rectangles
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.lineTo(x+w-r, y);
+      ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+      ctx.lineTo(x+w, y+h-r);
+      ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+      ctx.lineTo(x+r, y+h);
+      ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+      ctx.lineTo(x, y+r);
+      ctx.quadraticCurveTo(x, y, x+r, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();   
+    }
+
+    function getMatrix( lnglat, altitude ) {
+      var modelAsMercatorCoordinate = mapboxgl.MercatorCoordinate.fromLngLat(lnglat, altitude);
+      var modelTransform = {
+        translateX: modelAsMercatorCoordinate.x,
+        translateY: modelAsMercatorCoordinate.y,
+        translateZ: modelAsMercatorCoordinate.z,
+        rotateX: modelRotate[0],
+        rotateY: modelRotate[1],
+        rotateZ: modelRotate[2],
+        scale: modelAsMercatorCoordinate.meterInMercatorCoordinateUnits()
+      }
+      var rotationX = new THREE.Matrix4().makeRotationAxis(
+        new THREE.Vector3(1, 0, 0),
+          modelTransform.rotateX
+      );
+
+      var rotationY = new THREE.Matrix4().makeRotationAxis(
+        new THREE.Vector3(0, 1, 0),
+        modelTransform.rotateY * -1
+      );
+
+      var rotationZ = new THREE.Matrix4().makeRotationAxis(
+        new THREE.Vector3(0, 0, 1),
+        modelTransform.rotateZ
+      );
+      
+      var l = new THREE.Matrix4()
+        .makeTranslation(
+          modelTransform.translateX,
+          modelTransform.translateY,
+          modelTransform.translateZ
+        ).scale(
+          new THREE.Vector3(
+            modelTransform.scale,
+            -modelTransform.scale,
+            modelTransform.scale
+          )
+        )
+        .multiply(rotationX)
+        .multiply(rotationY)
+        .multiply(rotationZ);
+      return l;
+    }
+
+    function update() {
+      // stats.update();
+    }
+
+    function render() {
+      renderer.render( scene, camera );
+    }    
+  </script>
+</body>
+</html>

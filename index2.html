@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <title>Document</title>
+
+  <script src="./node_modules/jquery/dist/jquery.min.js"></script>
+  <script src="./threebox.js"></script>
+  <script src="https://unpkg.com/three@0.106.2/build/three.js"></script>
+  <!-- <script src="./OBJLoader.js"></script> -->
+  <script src="https://unpkg.com/three@0.106.2/examples/js/loaders/GLTFLoader.js"></script>
+
+  <script src="https://api.tiles.mapbox.com/mapbox-gl-js/v1.6.0/mapbox-gl.js"></script>
+  <link href="https://api.tiles.mapbox.com/mapbox-gl-js/v1.6.0/mapbox-gl.css" rel="stylesheet" />
+  <style>
+    .coordinates {
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      padding:5px 10px;
+      margin: 0;
+      font-size: 11px;
+      line-height: 18px;
+      border-radius: 3px;
+      display: none;
+    }
+    .ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="map" style="width: 1920px; height: 1080px"></div>
+  <div class="ui">
+    <input id="mission" type="checkbox" onchange="missionToggle()">mission
+  </div>
+  <pre id='coordinates' class='coordinates'></pre>
+</body>
+<script>
+  mapboxgl.accessToken = 'pk.eyJ1IjoiYmtobzIiLCJhIjoiY2syNWZiOXM3MGh3eDNnbnV1bmN0NTBwMyJ9.uigMIX5bGaHKQ4HetqN8IA';
+  var map = new mapboxgl.Map({
+    container: "map",
+    style: 'mapbox://styles/mapbox/outdoors-v11',
+    pitch: 45,
+    center: [127.1260649, 37.3858709],
+    zoom: 18,
+    bearing: 0,
+    antialias : true,
+    localIdeographFontFamily: "'Noto Sans', 'Noto Sans CJK SC', sans-serif"
+  });
+
+  var drawMission = false;
+
+  var isDragging;
+  var isCursorOverPoint;
+  let activeFeature;
+  var geojson = null;
+  var poleData = null;
+  var canvas = map.getCanvasContainer();
+
+  // transformation parameters to position, rotate and scale the 3D model onto the map
+  
+  var modelOrigin = [127.1260649, 37.3858709];
+  var modelAltitude = 50;
+  var modelRotate = [Math.PI / 2, 0, 0];
+
+  var coordinate = mapboxgl.MercatorCoordinate.fromLngLat(
+    modelOrigin,
+    modelAltitude
+  );
+
+  var modelTransform = {
+    translateX: coordinate.x,
+    translateY: coordinate.y,
+    translateZ: coordinate.z,
+    rotateX: modelRotate[0],
+    rotateY: modelRotate[1],
+    rotateZ: modelRotate[2],
+    /* Since our 3D model is in real world meters, a scale transform needs to be
+    * applied since the CustomLayerInterface expects units in MercatorCoordinates.
+    */
+    scale: coordinate.meterInMercatorCoordinateUnits()
+  };
+
+  var THREE = window.THREE;
+  var camera = new THREE.PerspectiveCamera(75, 1600 / 900, 0.1, 1000);//THREE.Camera();
+  var scene = new THREE.Scene();
+  /**
+  * @typedef {modelOption}
+  * @property {boolean} minzoom
+  * @property {boolean} maxzoom
+  * @property {}
+  */
+  var droneModel = 
+  /*
+  * @function droneModelConstructor
+  * @param {string} id 
+  * @param {array<number>} initPosition
+  * @param {number} altitude
+  * @param {string} gltfSourceUrl
+  * @param {modelOption} options
+  */
+  function(id, initPosition, altitude, gltfUrl, options){
+    if(!mapboxgl){ throw new Error("Mapbox gl didn't load")}
+    if(!id){ throw new Error("Invalid layer ID")}
+    if(!initPosition){ throw new Error("Invalid default layer location")}
+    if(!altitude){ throw new Error("Invalid default model altitude")}
+    if(!gltfUrl){ throw new Error("Invalid model's gtlf location")}
+
+    this._d = {};
+    var d = this._d;
+    d.id = id;
+    d.type = 'custom';
+    d.renderingMode = '3d';
+    d.options = {
+      minzoom : 1,
+      maxzoom : 24,
+    };
+    d.layout = {
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+      'icon-padding': 0,
+      'text-allow-overlap': true // doesnt make sense I know, but I tried this
+    }
+    d.camera = options.camera;
+    d.scene = options.scene;
+    
+    d.clock = new THREE.Clock();
+
+    d.onAdd = function(map, gl){
+
+      window.tc = new Threebox(
+          map, 
+          gl
+      );
+  
+      // use the three.js GLTF loader to add the 3D model to the three.js scene
+      var loader = new THREE.GLTFLoader();
+      loader.load(
+        // 'https://docs.mapbox.com/mapbox-gl-js/assets/34M_17/34M_17.gltf',
+        // './model/Box.gltf',
+        gltfUrl,
+        function (gltf) {
+          const mesh = tc.Object3D({obj: gltf.scene, units:'meters' });
+          initPosition.push(altitude);
+          mesh.setCoords(initPosition);
+          mesh.setRotation({x : 90, y : 0, z : 0})
+
+          d.mixer = new THREE.AnimationMixer(gltf.scene);
+          gltf.animations.forEach((clip) => {
+            d.mixer.clipAction(clip).play();
+          });
+          d.mixer.timeScale = 1;
+          tc.add(mesh);
+        }.bind(d)
+      );
+      d.map = map;
+
+      // use the Mapbox GL JS map canvas for three.js
+      d.renderer = new THREE.WebGLRenderer({
+        canvas: map.getCanvas(),
+        context: gl,
+        antialias: true
+      });
+
+      d.renderer.autoClear = true;
+    };
+    
+    d.render = function(gl, matrix){
+      tc.update();
+      if(d.mixer){
+        d.mixer.update(d.clock.getDelta());
+      }
+      
+      if(coordinate){
+        var rotate = [Math.PI / 2, 0, 0];
+        var transform = {
+          translateX: coordinate.x,
+          translateY: coordinate.y,
+          translateZ: coordinate.z,
+          rotateX: rotate[0],
+          rotateY: rotate[1],
+          rotateZ: rotate[2],
+          /* Since our 3D model is in real world meters, a scale transform needs to be
+          * applied since the CustomLayerInterface expects units in MercatorCoordinates.
+          */
+          scale: coordinate.meterInMercatorCoordinateUnits()
+        };      
+        var rotationX = new THREE.Matrix4().makeRotationAxis(
+          new THREE.Vector3(1, 0, 0),
+          transform.rotateX
+        );
+        var rotationY = new THREE.Matrix4().makeRotationAxis(
+          new THREE.Vector3(0, 1, 0),
+          transform.rotateY
+        );
+        var rotationZ = new THREE.Matrix4().makeRotationAxis(
+          new THREE.Vector3(0, 0, 1),
+          transform.rotateZ
+        );
+
+        var m = new THREE.Matrix4().fromArray(active.parent.parent.matrix.elements);
+        var l = new THREE.Matrix4()
+          .makeTranslation(
+            transform.translateX,
+            transform.translateY,
+            transform.translateZ
+          )
+          .scale(
+            new THREE.Vector3(
+              transform.scale,
+              -transform.scale,
+              transform.scale
+            )
+          )
+          .multiply(rotationX)
+          .multiply(rotationY)
+          .multiply(rotationZ);
+          
+        this.camera.projectionMatrix = m.multiply(l);
+      }
+    }
+
+    return this._d;
+  }
+  
+  
+  var raycaster = new THREE.Raycaster();
+  var mouse = new THREE.Vector2();
+  var onClickPosition = new THREE.Vector2();
+
+  var getMousePosition = function ( dom, x, y ) {
+    var rect = dom.getBoundingClientRect();
+    return [ ( x - rect.left ) / rect.width, ( y - rect.top ) / rect.height ];
+  };
+  var getIntersects = function ( point, objects ) {
+    mouse.set( ( point.x * 2 ) - 1, - ( point.y * 2 ) + 1 );
+    raycaster.setFromCamera( mouse, camera );
+    return raycaster.intersectObjects( objects );
+  };
+  
+  function onMouseMove( evt ) {
+    evt.preventDefault();
+    var array = getMousePosition( window.document.getElementsByTagName("canvas")[0], evt.point.x, evt.point.y );
+    onClickPosition.fromArray( array );
+    var intersects = getIntersects( onClickPosition, scene.children );
+    if ( intersects.length > 0 && intersects[ 0 ].uv ) {
+      
+      var uv = intersects[ 0 ].uv;
+      intersects[ 0 ].object.material.map.transformUv( uv );
+      canvas.setCrossPosition( uv.x, uv.y );
+    }
+  }    
+  var active = false;
+  map.on('style.load', function () {
+    const labelList = map.getStyle().layers.filter(layer => {
+      return /-label/.test(layer.id);
+    });
+    for (let labelLayer of labelList) {
+      map.setLayoutProperty(labelLayer.id, 'text-field', ['coalesce', ['get', 'name_' + "ko"], ['get', 'name']]);
+    }
+    var layers = map.getStyle().layers;
+    var labelLayerId;
+    for (var i = 0; i < layers.length; i++) {
+      if (layers[i].type === "symbol" && layers[i].layout["text-field"]) {
+        labelLayerId = layers[i].id;
+        break;
+      }
+    }
+
+    
+    // for(var i = 0; i < 5; i++){
+      var id = `drone-${i}`;
+      var initPosition = [
+        modelOrigin[0] + ((Math.random() * 300) / 100000),
+        modelOrigin[1] + ((Math.random() * 300) / 100000),
+      ];
+      var gltfUrl = './model/drone/custom_drone.gltf';
+      map.addLayer(new droneModel(id, initPosition, 50, gltfUrl, {
+        camera : camera,
+        scene : scene
+      }), labelLayerId);
+    // }
+      
+
+
+    map.addLayer(
+      {
+        id: "3d-buildings",
+        source: "composite",
+        "source-layer": "building",
+        filter: ["==", "extrude", "true"],
+        type: "fill-extrusion",
+        minzoom: 16,
+        paint: {
+          "fill-extrusion-color": "#aaa",
+
+          // use an 'interpolate' expression to add a smooth transition effect to the
+          // buildings as the user zooms in
+          "fill-extrusion-height": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            16.5,
+            0,
+            16.8,
+            ["get", "height"]
+          ],
+          "fill-extrusion-base": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            16.5,
+            0,
+            16.8,
+            ["get", "min_height"]
+          ],
+          "fill-extrusion-opacity": 0.6
+        }
+      },
+      labelLayerId
+    );
+
+    map.removeLayer('poi-label');
+    map.removeLayer('transit-label');
+
+  })
+  map.on('load', function(){
+
+    geojson = {
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "properties": {
+            poleid:"pole-one",
+            position: 0
+          },
+          "geometry": {
+              "type": "Point",
+              "coordinates": [127.1260649, 37.3858709]
+          }
+        }
+      ]
+    };
+    poleData = {
+      "features" : [
+        {
+          "type" : "Feature",
+          "properties" : {
+            "level" : 1,
+            "name" : "mypone",
+            "height" : [50],
+            "base_height" : 20,
+            "color" : "blue"
+          },
+          "geometry" : {
+            "type" : "Polygon",
+            "coordinates" : [
+                [
+                  [127.1260659, 37.3858749, 40], [127.1260649, 37.3858709, 60], [127.1260619, 37.3858689, 100]
+                ]
+              ]
+          }
+        }
+      ],
+      "type" : "FeatureCollection"
+    }
+
+    map.addSource('points-data', {
+        "type": "geojson",
+        "data": geojson
+    });
+    map.addSource('pole-data',{
+        type : 'geojson',
+        data : poleData
+    })
+    
+    map.addLayer({
+      id : 'pole-polygon',
+      type : 'fill-extrusion',
+      source : 'pole-data',
+      paint: {
+        'fill-extrusion-color': ['get', 'color'],
+        'fill-extrusion-height': ['get', 'height'],
+        'fill-extrusion-base': ['get', 'base_height'],
+        'fill-extrusion-opacity': 0.5
+      }
+    })
+    map.addLayer({
+        "id": "point",
+        "type": "circle",
+        "source": "points-data",
+        "paint": {
+            "circle-radius": 10,
+            "circle-color": "#3887be"
+        }
+    });
+  })
+  coordinate = null;
+  function onMove(e) {
+    if (!active) return;
+
+    // Set a UI indicator for dragging.
+    canvas.style.cursor = 'grabbing';
+
+    // Update the Point feature in `geojson` coordinates
+    // and call setData to the source layer `point` on it.
+    var position = [e.lngLat.lng, e.lngLat.lat];
+    coordinate = mapboxgl.MercatorCoordinate.fromLngLat(
+      position,
+      50
+    );
+      
+    // geojson.features[activeFeature.properties.position].geometry.coordinates = [e.lngLat.lng, e.lngLat.lat];
+    // map.getSource('points-data').setData(geojson);
+    // coordinate = mapboxgl.MercatorCoordinate.fromLngLat(
+    //   position,
+    //   50
+    // );
+  }
+
+  function onUp(e) {
+    if (!active) return;
+
+    // Print the coordinates of where the point had
+    // finished being dragged to on the map.
+    canvas.style.cursor = '';
+    active = false;
+
+    // Unbind mouse events
+    map.off('mousemove', onMove);
+    map.dragPan.enable()
+    coordinate = null;
+  }
+  //add mousing interactions
+  var mouseMoving = function(e){
+    var latlng = [e.lngLat.lng, e.lngLat.lat]
+    geojson.features[0].geometry.coordinates = latlng;
+    poleData.features[0].geometry.coordinates = [[
+      latlng,
+      [
+        latlng[0] - 0.0000080,
+        latlng[1]
+      ],
+      [
+        latlng[0] - 0.0000040,
+        latlng[1] + 0.0000040
+      ],
+      [
+        latlng[0] + 0.0000040,
+        latlng[1] - 0.0000040
+      ],
+    ]]
+    map.getSource('points-data').setData(geojson);
+    map.getSource('pole-data').setData(poleData);
+  }
+  map.on('mousedown', 'pole-polygon', function(e){
+    
+    map.dragPan.disable();
+    map.on('mousemove', mouseMoving);
+    map.once('mouseup', function(e){
+
+      map.off('mousemove', mouseMoving);
+      map.dragPan.enable();
+      // map.off('mouseup');
+    })
+  })
+  
+  map.on('mousedown', function(e){
+
+    // calculate objects intersecting the picking ray
+    var intersect = tc.queryRenderedFeatures(e.point)[0]
+    var intersectionExists = typeof intersect == "object"
+
+    // if intersect exists, highlight it
+    if (intersect) {
+
+      active = intersect.object.parent;
+
+      // Set a cursor indicator
+      canvas.style.cursor = 'grab';
+
+      // Mouse events
+      map.on('mousemove', onMove);
+      map.once('mouseup', onUp);
+      map.dragPan.disable()
+    }
+
+    // on state change, fire a repaint
+    // if (active !== intersectionExists) {
+    //     active = intersectionExists;
+    //     tc.repaint();
+    // }
+  });
+  var sourceData = {
+    "features" : [
+      {
+        "type" : "Feature",
+        "properties" : {
+          "level" : 1,
+          "name" : "missionData",
+          "height" : 50,
+          "base_height" : 00,
+          "color" : "green"
+        },
+        "geometry" : {
+          "type" : "Polygon",
+          "coordinates" : []
+        }
+      }
+    ],
+    "type" : "FeatureCollection"
+  }
+  function onClickMap(event){
+    var missionData = map.getSource("missionData");
+    if(!missionData){
+      
+      var bar = [
+        [event.lngLat.lng, event.lngLat.lat],
+        [event.lngLat.lng + 0.00001, event.lngLat.lat],
+        [event.lngLat.lng + 0.00001, event.lngLat.lat + 0.00001],
+        [event.lngLat.lng, event.lngLat.lat + 0.00001],
+      ]
+      sourceData.features[0].geometry.coordinates.push(bar);
+      map.addSource('missionData', {
+        type : 'geojson',
+        data : sourceData
+      });
+      map.addLayer({
+        id : 'mission-polygon',
+        type : 'fill-extrusion',
+        source : 'missionData',
+        paint: {
+          'fill-extrusion-color': ['get', 'color'],
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-base': ['get', 'base_height'],
+          'fill-extrusion-opacity': 0.5
+        }
+      })
+    } else {
+      var bar = [
+        [event.lngLat.lng, event.lngLat.lat],
+        [event.lngLat.lng + 0.00001, event.lngLat.lat],
+        [event.lngLat.lng + 0.00001, event.lngLat.lat + 0.00001],
+        [event.lngLat.lng, event.lngLat.lat + 0.00001],
+      ]
+      sourceData.features.push({
+        "type" : "Feature",
+        "properties" : {
+          "level" : 1,
+          "name" : "missionData",
+          "height" : parseInt((Math.random() * 120) + 1),
+          "base_height" : 00,
+          "color" : "green"
+        },
+        "geometry" : {
+          "type" : "Polygon",
+          "coordinates" : [bar]
+        }
+      });
+      map.getSource("missionData").setData(sourceData);
+    }
+  }
+  function missionToggle(){
+    var mission = document.querySelector("#mission");
+    drawMission = mission.checked;
+    if(mission.checked){
+      map.on('click', onClickMap);
+    } else {
+      map.off('click', onClickMap);
+    }
+  }
+</script>
+
+</html>
